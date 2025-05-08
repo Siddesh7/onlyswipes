@@ -79,6 +79,11 @@
         "internalType": "uint256",
         "name": "_creatorFee",
         "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "_creatorAddress",
+        "type": "address"
       }
     ],
     "name": "createMarket",

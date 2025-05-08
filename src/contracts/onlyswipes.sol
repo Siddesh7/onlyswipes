@@ -54,6 +54,10 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         mapping(address => uint256) noShares;  // Number of NO shares per user
         mapping(address => bool) hasVoted;
         mapping(address => ResolverVote) resolverVotes;
+        
+        // New fields for tracking bettors
+        mapping(address => bool) isBettor;
+        address[] bettorAddresses;
     }
     
     // Platform address to collect fees
@@ -85,6 +89,10 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
     event WinningsClaimed(uint256 indexed marketId, address indexed bettor, uint256 amount);
     event SharePriceUpdated(uint256 oldSharePrice, uint256 newSharePrice);
     
+    // New debug events
+    event DistributionDebug(uint256 marketId, uint256 totalPool, uint256 winnersCount);
+    event WinnerDebug(uint256 marketId, address winner, uint256 shares, bool success);
+    
     /**
      * @dev Constructor initializes the contract with the platform address
      * @param _platformAddress Address that will receive platform fees
@@ -94,55 +102,65 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         platformAddress = _platformAddress;
     }
     
-    /**
-     * @dev Creates a new prediction market
-     * @param _metadata JSON string with market details
-     * @param _startTime Start time of the market
-     * @param _endTime End time of the market
-     * @param _creatorFee Creator fee in basis points (e.g., 100 = 1%)
-     * @return marketId ID of the newly created market
-     */
-    function createMarket(
-        string calldata _metadata,
-        uint256 _startTime,
-        uint256 _endTime,
-        uint256 _creatorFee
-    ) external returns (uint256 marketId) {
-        require(_startTime > block.timestamp, "Start time must be in the future");
-        require(_endTime > _startTime, "End time must be after start time");
-        require(_creatorFee <= 500, "Creator fee cannot exceed 5%");
-        
-        marketId = totalMarkets;
-        
-        Market storage newMarket = markets[marketId];
-        newMarket.creator = msg.sender;
-        newMarket.metadata = _metadata;
-        newMarket.startTime = _startTime;
-        newMarket.endTime = _endTime;
-        newMarket.creatorFee = _creatorFee;
-        newMarket.status = MarketStatus.Active;
-        newMarket.finalResult = ResolverVote.None;
-        
-        marketIds.push(marketId);
-        totalMarkets++;
-        
-        emit MarketCreated(marketId, msg.sender, _metadata, _startTime, _endTime);
-        
-        return marketId;
-    }
+  /**
+ * @dev Creates a new prediction market
+ * @param _metadata JSON string with market details
+ * @param _startTime Start time of the market
+ * @param _endTime End time of the market
+ * @param _creatorFee Creator fee in basis points (e.g., 100 = 1%)
+ * @param _creatorAddress Address that will receive creator fees (useful for smart wallets)
+ * @return marketId ID of the newly created market
+ */
+function createMarket(
+    string calldata _metadata,
+    uint256 _startTime,
+    uint256 _endTime,
+    uint256 _creatorFee,
+    address _creatorAddress
+) external returns (uint256 marketId) {
+    require(_startTime > block.timestamp, "Start time must be in the future");
+    require(_endTime > _startTime, "End time must be after start time");
+    require(_creatorFee <= 500, "Creator fee cannot exceed 5%");
+    
+    // Use the specified creator address if provided, otherwise use msg.sender
+    address creator = _creatorAddress == address(0) ? msg.sender : _creatorAddress;
+    
+    marketId = totalMarkets;
+    
+    Market storage newMarket = markets[marketId];
+    newMarket.creator = creator;
+    newMarket.metadata = _metadata;
+    newMarket.startTime = _startTime;
+    newMarket.endTime = _endTime;
+    newMarket.creatorFee = _creatorFee;
+    newMarket.status = MarketStatus.Active;
+    newMarket.finalResult = ResolverVote.None;
+    
+    marketIds.push(marketId);
+    totalMarkets++;
+    
+    emit MarketCreated(marketId, creator, _metadata, _startTime, _endTime);
+    
+    return marketId;
+}
     
     /**
      * @dev Buys shares in a market prediction
      * @param _marketId ID of the market
      * @param _direction Direction of the bet (Yes or No)
      * @param _shares Number of shares to buy
+     * @param _walletAddress Address that will own the shares (useful for smart wallets)
      */
     function buyShares(
         uint256 _marketId,
         BetDirection _direction,
-        uint256 _shares
+        uint256 _shares,
+        address _walletAddress
     ) external payable nonReentrant {
         Market storage market = markets[_marketId];
+        
+        // Use the specified wallet address if provided, otherwise use msg.sender
+        address bettor = _walletAddress == address(0) ? msg.sender : _walletAddress;
         
         require(market.creator != address(0), "Market does not exist");
         require(market.status == MarketStatus.Active, "Market is not active");
@@ -156,16 +174,22 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         // Ensure correct ETH amount was sent
         require(msg.value == requiredAmount, "Incorrect ETH amount sent");
         
+        // Track bettor if not already tracked
+        if (!market.isBettor[bettor]) {
+            market.isBettor[bettor] = true;
+            market.bettorAddresses.push(bettor);
+        }
+        
         // Update market stats
         if (_direction == BetDirection.Yes) {
-            market.yesShares[msg.sender] += _shares;
+            market.yesShares[bettor] += _shares;
             market.totalYesShares += _shares;
         } else {
-            market.noShares[msg.sender] += _shares;
+            market.noShares[bettor] += _shares;
             market.totalNoShares += _shares;
         }
         
-        emit SharesBought(_marketId, msg.sender, _direction, _shares, requiredAmount);
+        emit SharesBought(_marketId, bettor, _direction, _shares, requiredAmount);
     }
     
     /**
@@ -184,69 +208,87 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
     
     /**
      * @dev Stakes ETH to become a resolver
+     * @param _walletAddress Address that will be associated with the resolver (useful for smart wallets)
      */
-    function stakeAsResolver() external payable nonReentrant {
-        require(resolvers[msg.sender].isActive == false, "Already an active resolver");
+    function stakeAsResolver(address _walletAddress) external payable nonReentrant {
+        // Use the specified wallet address if provided, otherwise use msg.sender
+        address resolver = _walletAddress == address(0) ? msg.sender : _walletAddress;
+        
+        require(resolvers[resolver].isActive == false, "Already an active resolver");
         require(msg.value == RESOLVER_STAKE_AMOUNT, "Incorrect stake amount");
         
         // Update resolver info
-        resolvers[msg.sender] = Resolver({
+        resolvers[resolver] = Resolver({
             stakedAmount: RESOLVER_STAKE_AMOUNT,
             stakingTime: block.timestamp,
             isActive: true
         });
         
         // Add to resolver address array if not already tracked
-        if (!isKnownResolver[msg.sender]) {
-            resolverAddressArray.push(msg.sender);
-            isKnownResolver[msg.sender] = true;
+        if (!isKnownResolver[resolver]) {
+            resolverAddressArray.push(resolver);
+            isKnownResolver[resolver] = true;
         }
         
-        emit ResolverStaked(msg.sender, RESOLVER_STAKE_AMOUNT);
+        emit ResolverStaked(resolver, RESOLVER_STAKE_AMOUNT);
     }
     
     /**
      * @dev Unstakes ETH and removes resolver status
+     * @param _walletAddress Address of the resolver to unstake (useful for smart wallets)
      */
-    function unstakeAsResolver() external nonReentrant {
-        Resolver storage resolver = resolvers[msg.sender];
+    function unstakeAsResolver(address _walletAddress) external nonReentrant {
+        // Use the specified wallet address if provided, otherwise use msg.sender
+        address resolver = _walletAddress == address(0) ? msg.sender : _walletAddress;
         
-        require(resolver.isActive, "Not an active resolver");
-        require(resolver.stakedAmount > 0, "No stake to withdraw");
+        // Verify caller is authorized (must be either the resolver or msg.sender must be the resolver)
+        require(resolver == msg.sender || resolvers[resolver].isActive, "Not authorized");
         
-        uint256 amountToReturn = resolver.stakedAmount;
+        Resolver storage resolverData = resolvers[resolver];
+        
+        require(resolverData.isActive, "Not an active resolver");
+        require(resolverData.stakedAmount > 0, "No stake to withdraw");
+        
+        uint256 amountToReturn = resolverData.stakedAmount;
         
         // Update resolver info
-        resolver.stakedAmount = 0;
-        resolver.isActive = false;
+        resolverData.stakedAmount = 0;
+        resolverData.isActive = false;
         
         // Transfer ETH back to resolver
-        (bool success, ) = msg.sender.call{value: amountToReturn}("");
+        (bool success, ) = resolver.call{value: amountToReturn}("");
         require(success, "ETH transfer failed");
         
-        emit ResolverUnstaked(msg.sender, amountToReturn);
+        emit ResolverUnstaked(resolver, amountToReturn);
     }
     
     /**
      * @dev Votes on a market's outcome (resolvers only)
      * @param _marketId ID of the market
      * @param _vote Vote (Yes, No, or Invalid)
+     * @param _walletAddress Address of the resolver voting (useful for smart wallets)
      */
-    function voteOnMarket(uint256 _marketId, ResolverVote _vote) external {
+    function voteOnMarket(uint256 _marketId, ResolverVote _vote, address _walletAddress) external {
         require(_vote != ResolverVote.None, "Invalid vote option");
         
+        // Use the specified wallet address if provided, otherwise use msg.sender
+        address resolver = _walletAddress == address(0) ? msg.sender : _walletAddress;
+        
+        // Verify caller is authorized
+        require(resolver == msg.sender || resolvers[resolver].isActive, "Not authorized");
+        
         Market storage market = markets[_marketId];
-        Resolver storage resolver = resolvers[msg.sender];
+        Resolver storage resolverData = resolvers[resolver];
         
         require(market.creator != address(0), "Market does not exist");
         require(market.status == MarketStatus.Closed, "Market must be closed for voting");
-        require(resolver.isActive, "Not an active resolver");
-        require(resolver.stakingTime < market.startTime, "Must have staked before market started");
-        require(!market.hasVoted[msg.sender], "Already voted on this market");
+        require(resolverData.isActive, "Not an active resolver");
+        require(resolverData.stakingTime < market.startTime, "Must have staked before market started");
+        require(!market.hasVoted[resolver], "Already voted on this market");
         
         // Record the vote
-        market.hasVoted[msg.sender] = true;
-        market.resolverVotes[msg.sender] = _vote;
+        market.hasVoted[resolver] = true;
+        market.resolverVotes[resolver] = _vote;
         
         // Update vote counts
         if (_vote == ResolverVote.Yes) {
@@ -257,7 +299,7 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
             market.invalidVotes++;
         }
         
-        emit ResolverVoted(_marketId, msg.sender, _vote);
+        emit ResolverVoted(_marketId, resolver, _vote);
         
         // Check if we have a majority to finalize
         checkAndFinalizeMarket(_marketId);
@@ -266,8 +308,18 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
     /**
      * @dev Claims winnings from a resolved market
      * @param _marketId ID of the market
+     * @param _walletAddress Address of the bettor claiming winnings (useful for smart wallets)
      */
-    function claimWinnings(uint256 _marketId) external nonReentrant {
+    function claimWinnings(uint256 _marketId, address _walletAddress) external nonReentrant {
+        // Use the specified wallet address if provided, otherwise use msg.sender
+        address bettor = _walletAddress == address(0) ? msg.sender : _walletAddress;
+        
+        // Verify caller is authorized
+        require(bettor == msg.sender || 
+                markets[_marketId].yesShares[bettor] > 0 || 
+                markets[_marketId].noShares[bettor] > 0, 
+                "Not authorized");
+        
         Market storage market = markets[_marketId];
         
         require(market.creator != address(0), "Market does not exist");
@@ -277,13 +329,13 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         
         if (market.finalResult == ResolverVote.Invalid) {
             // Return original bets if market is invalid
-            uint256 yesSharesValue = market.yesShares[msg.sender] * sharePrice;
-            uint256 noSharesValue = market.noShares[msg.sender] * sharePrice;
+            uint256 yesSharesValue = market.yesShares[bettor] * sharePrice;
+            uint256 noSharesValue = market.noShares[bettor] * sharePrice;
             winningAmount = yesSharesValue + noSharesValue;
             
             // Reset user's shares
-            market.yesShares[msg.sender] = 0;
-            market.noShares[msg.sender] = 0;
+            market.yesShares[bettor] = 0;
+            market.noShares[bettor] = 0;
         } else {
             bool userHasWinningShares = false;
             uint256 userWinningShares = 0;
@@ -291,18 +343,18 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
             uint256 totalPoolValue = (market.totalYesShares + market.totalNoShares) * sharePrice;
             
             // Determine if user has winning shares and how many
-            if (market.finalResult == ResolverVote.Yes && market.yesShares[msg.sender] > 0) {
+            if (market.finalResult == ResolverVote.Yes && market.yesShares[bettor] > 0) {
                 userHasWinningShares = true;
-                userWinningShares = market.yesShares[msg.sender];
+                userWinningShares = market.yesShares[bettor];
                 totalWinningShares = market.totalYesShares;
                 // Reset user's shares
-                market.yesShares[msg.sender] = 0;
-            } else if (market.finalResult == ResolverVote.No && market.noShares[msg.sender] > 0) {
+                market.yesShares[bettor] = 0;
+            } else if (market.finalResult == ResolverVote.No && market.noShares[bettor] > 0) {
                 userHasWinningShares = true;
-                userWinningShares = market.noShares[msg.sender];
+                userWinningShares = market.noShares[bettor];
                 totalWinningShares = market.totalNoShares;
                 // Reset user's shares
-                market.noShares[msg.sender] = 0;
+                market.noShares[bettor] = 0;
             }
             
             if (userHasWinningShares && totalWinningShares > 0) {
@@ -332,14 +384,14 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         
         // Transfer winnings to user
         if (winningAmount > 0) {
-            (bool success, ) = msg.sender.call{value: winningAmount}("");
+            (bool success, ) = bettor.call{value: winningAmount}("");
             require(success, "Winnings transfer failed");
-            emit WinningsClaimed(_marketId, msg.sender, winningAmount);
+            emit WinningsClaimed(_marketId, bettor, winningAmount);
         }
     }
     
     /**
-     * @dev Checks if a market can be finalized based on resolver votes
+     * @dev Checks if a market can be finalized based on resolver votes and distributes winnings if resolved
      * @param _marketId ID of the market
      */
     function checkAndFinalizeMarket(uint256 _marketId) internal {
@@ -397,7 +449,139 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         market.finalResult = result;
         
         emit MarketResolved(_marketId, result);
+        
+        // AUTO-DISTRIBUTE WINNINGS TO ALL WINNERS
+        distributeWinnings(_marketId);
     }
+
+    /**
+     * @dev Automatically distributes winnings to all winners of a resolved market
+     * @param _marketId ID of the market
+     */
+    function distributeWinnings(uint256 _marketId) internal {
+        Market storage market = markets[_marketId];
+        require(market.status == MarketStatus.Resolved, "Market is not resolved");
+        
+        // Calculate total pool value
+        uint256 totalPoolValue = (market.totalYesShares + market.totalNoShares) * sharePrice;
+        
+        // Get winning side details
+        uint256 totalWinningShares;
+        address[] memory winners;
+        uint256[] memory winningShares;
+        uint256 winnerCount = 0;
+        
+        // First pass: Count winners and get winning shares
+        if (market.finalResult == ResolverVote.Invalid) {
+            // In case of INVALID result, everyone gets their money back
+            // Use bettor addresses array instead of resolver array
+            winners = new address[](market.bettorAddresses.length * 2); // Max possible size
+            winningShares = new uint256[](market.bettorAddresses.length * 2);
+            
+            for (uint256 i = 0; i < market.bettorAddresses.length; i++) {
+                address addr = market.bettorAddresses[i];
+                
+                // Check YES shares
+                if (market.yesShares[addr] > 0) {
+                    winners[winnerCount] = addr;
+                    winningShares[winnerCount] = market.yesShares[addr] * sharePrice; // Direct return of investment
+                    winnerCount++;
+                }
+                
+                // Check NO shares separately (same user might have both)
+                if (market.noShares[addr] > 0) {
+                    winners[winnerCount] = addr;
+                    winningShares[winnerCount] = market.noShares[addr] * sharePrice; // Direct return of investment
+                    winnerCount++;
+                }
+            }
+        } else if (market.finalResult == ResolverVote.Yes) {
+            // YES won, distribute to YES bettors
+            totalWinningShares = market.totalYesShares;
+            winners = new address[](market.bettorAddresses.length);
+            winningShares = new uint256[](market.bettorAddresses.length);
+            
+            for (uint256 i = 0; i < market.bettorAddresses.length; i++) {
+                address addr = market.bettorAddresses[i];
+                if (market.yesShares[addr] > 0) {
+                    winners[winnerCount] = addr;
+                    winningShares[winnerCount] = market.yesShares[addr];
+                    winnerCount++;
+                }
+            }
+        } else if (market.finalResult == ResolverVote.No) {
+            // NO won, distribute to NO bettors
+            totalWinningShares = market.totalNoShares;
+            winners = new address[](market.bettorAddresses.length);
+            winningShares = new uint256[](market.bettorAddresses.length);
+            
+            for (uint256 i = 0; i < market.bettorAddresses.length; i++) {
+                address addr = market.bettorAddresses[i];
+                if (market.noShares[addr] > 0) {
+                    winners[winnerCount] = addr;
+                    winningShares[winnerCount] = market.noShares[addr];
+                    winnerCount++;
+                }
+            }
+        }
+        
+        // Debug event to track distribution start
+        emit DistributionDebug(_marketId, totalPoolValue, winnerCount);
+        
+        // Second pass: Distribute winnings to each winner
+        for (uint256 i = 0; i < winnerCount; i++) {
+            address winner = winners[i];
+            uint256 shares = winningShares[i];
+            uint256 winningAmount = 0;
+            
+            if (market.finalResult == ResolverVote.Invalid) {
+                // For Invalid results, winningAmount is already calculated above
+                winningAmount = shares;
+            } else {
+                // Pari-mutuel calculation
+                winningAmount = (shares * totalPoolValue) / totalWinningShares;
+                
+                // Calculate and deduct fees
+                uint256 platformFee = (winningAmount * platformFeePercent) / BASIS_POINTS;
+                uint256 creatorFee = (winningAmount * market.creatorFee) / BASIS_POINTS;
+                
+                // Send fees
+                if (platformFee > 0) {
+                    (bool platformSuccess, ) = platformAddress.call{value: platformFee}("");
+                    require(platformSuccess, "Platform fee transfer failed");
+                }
+                
+                if (creatorFee > 0) {
+                    (bool creatorSuccess, ) = market.creator.call{value: creatorFee}("");
+                    require(creatorSuccess, "Creator fee transfer failed");
+                }
+                
+                // Adjust winningAmount after fees
+                winningAmount = winningAmount - platformFee - creatorFee;
+            }
+            
+            // Reset user's shares to prevent double claiming
+            if (market.finalResult == ResolverVote.Yes || market.finalResult == ResolverVote.Invalid) {
+                market.yesShares[winner] = 0;
+            }
+            if (market.finalResult == ResolverVote.No || market.finalResult == ResolverVote.Invalid) {
+                market.noShares[winner] = 0;
+            }
+            
+            // Transfer winnings
+            if (winningAmount > 0) {
+                (bool success, ) = winner.call{value: winningAmount}("");
+                // Debug event for each transfer
+                emit WinnerDebug(_marketId, winner, winningAmount, success);
+                
+                // Don't revert the entire transaction if one transfer fails
+                if (success) {
+                    emit WinningsClaimed(_marketId, winner, winningAmount);
+                }
+            }
+        }
+    }
+    
     /**
      * @dev Gets the number of resolvers eligible to vote on a market
      * @param _marketId ID of the market
@@ -453,6 +637,15 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         Market storage market = markets[_marketId];
         
         return (market.yesShares[_user], market.noShares[_user]);
+    }
+    
+    /**
+     * @dev Gets the bettor addresses for a market
+     * @param _marketId ID of the market
+     * @return Array of bettor addresses
+     */
+    function getMarketBettors(uint256 _marketId) external view returns (address[] memory) {
+        return markets[_marketId].bettorAddresses;
     }
     
     /**
@@ -551,7 +744,18 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
                 count++;
             }
         }
-        return count;
+    return count;
+    }
+    
+    /**
+     * @dev Manually force distribution of winnings for a specific market
+     * @param _marketId ID of the market
+     */
+    function forceDistributeWinnings(uint256 _marketId) external onlyOwner {
+        Market storage market = markets[_marketId];
+        require(market.status == MarketStatus.Resolved, "Market is not resolved");
+        
+        distributeWinnings(_marketId);
     }
     
     /**
@@ -564,8 +768,10 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
      */
     fallback() external payable {}
     
+    /**
+     * @dev Get current block timestamp
+     */
     function getCurrentBlockTimestamp() public view returns (uint256) {
         return block.timestamp;
     }
-
 }
