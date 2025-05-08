@@ -351,16 +351,33 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         // Calculate total stake of voters who have voted
         uint256 totalVoterStake = getVoterStakeValue(_marketId);
         
-        // Count total active resolvers who staked before market started
-        uint256 eligibleResolversCount = getEligibleResolversCount(_marketId);
+        // Count total votes
         uint256 totalVotes = market.yesVotes + market.noVotes + market.invalidVotes;
         
-        // Require at least 50% of eligible resolvers to have voted
-        if (totalVotes < eligibleResolversCount / 2) {
+        // DYNAMIC THRESHOLD BASED ON MARKET SIZE
+        uint256 requiredVotes = 2; // Minimum of 2 votes for small markets
+        
+        // Medium markets (>= 0.1 ETH) need 3 votes
+        if (totalBetsValue >= 0.1 ether) {
+            requiredVotes = 3;
+        }
+        
+        // Large markets (>= 0.5 ETH) need 5 votes
+        if (totalBetsValue >= 0.5 ether) {
+            requiredVotes = 5;
+        }
+        
+        // Very large markets (>= 1 ETH) need 7 votes
+        if (totalBetsValue >= 1 ether) {
+            requiredVotes = 7;
+        }
+        
+        // Check if we have enough votes
+        if (totalVotes < requiredVotes) {
             return;
         }
         
-        // Require the total stake of voters to be greater than the total bets
+        // Keep the economic security check
         if (totalVoterStake <= totalBetsValue) {
             return;
         }
@@ -381,7 +398,6 @@ contract PredictionMarketplace is Ownable, ReentrancyGuard {
         
         emit MarketResolved(_marketId, result);
     }
-    
     /**
      * @dev Gets the number of resolvers eligible to vote on a market
      * @param _marketId ID of the market

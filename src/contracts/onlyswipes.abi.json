@@ -15,6 +15,11 @@
         "internalType": "uint256",
         "name": "_shares",
         "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "_walletAddress",
+        "type": "address"
       }
     ],
     "name": "buyShares",
@@ -28,6 +33,11 @@
         "internalType": "uint256",
         "name": "_marketId",
         "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "_walletAddress",
+        "type": "address"
       }
     ],
     "name": "claimWinnings",
@@ -85,6 +95,19 @@
   {
     "inputs": [
       {
+        "internalType": "uint256",
+        "name": "_marketId",
+        "type": "uint256"
+      }
+    ],
+    "name": "forceDistributeWinnings",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "address",
         "name": "_platformAddress",
         "type": "address"
@@ -114,6 +137,31 @@
     ],
     "name": "OwnableUnauthorizedAccount",
     "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "marketId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "totalPool",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "winnersCount",
+        "type": "uint256"
+      }
+    ],
+    "name": "DistributionDebug",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -356,7 +404,13 @@
     "type": "event"
   },
   {
-    "inputs": [],
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_walletAddress",
+        "type": "address"
+      }
+    ],
     "name": "stakeAsResolver",
     "outputs": [],
     "stateMutability": "payable",
@@ -374,6 +428,37 @@
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "marketId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "winner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "shares",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "success",
+        "type": "bool"
+      }
+    ],
+    "name": "WinnerDebug",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -405,7 +490,13 @@
     "type": "fallback"
   },
   {
-    "inputs": [],
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_walletAddress",
+        "type": "address"
+      }
+    ],
     "name": "unstakeAsResolver",
     "outputs": [],
     "stateMutability": "nonpayable",
@@ -422,6 +513,11 @@
         "internalType": "enum PredictionMarketplace.ResolverVote",
         "name": "_vote",
         "type": "uint8"
+      },
+      {
+        "internalType": "address",
+        "name": "_walletAddress",
+        "type": "address"
       }
     ],
     "name": "voteOnMarket",
@@ -486,6 +582,25 @@
         "internalType": "uint256",
         "name": "count",
         "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_marketId",
+        "type": "uint256"
+      }
+    ],
+    "name": "getMarketBettors",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "",
+        "type": "address[]"
       }
     ],
     "stateMutability": "view",
